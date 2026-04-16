@@ -34,6 +34,25 @@
 
 ---
 
+## Git 仓库
+
+克隆到服务器：
+
+```bash
+git clone https://github.com/Assute/lightsail-ip.git /opt/AWS
+cd /opt/AWS
+cp config.example.json config.json
+```
+
+更新代码：
+
+```bash
+cd /opt/AWS
+git pull
+```
+
+---
+
 ## 依赖
 
 脚本依赖以下命令：
