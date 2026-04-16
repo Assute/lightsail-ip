@@ -49,16 +49,30 @@
 
 ```bash
 apt update
-apt install -y bash jq curl iputils-ping cron
+apt install -y bash jq curl unzip iputils-ping ca-certificates cron less groff
+cd /tmp
+curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip
+./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+aws --version
 ```
 
-AWS CLI 请按官方方式安装。
+如果你的机器是 `aarch64` / `arm64`，把上面的下载地址改成：
+
+```bash
+https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip
+```
 
 ### Alpine
 
 ```bash
-apk add --no-cache bash jq curl iputils aws-cli dcron
+setup-apkrepos -c
+sed -i 's#http://#https://#g' /etc/apk/repositories
+apk update
+apk add --no-cache bash jq curl iputils ca-certificates aws-cli dcron
 ```
+
+> Alpine 这里使用的是 **community 仓库里的 `aws-cli` 包**，优先考虑省空间和安装简洁。
 
 ---
 
