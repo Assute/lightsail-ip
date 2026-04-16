@@ -153,6 +153,24 @@ cp config.example.json config.json
 - `proxy_url`：代理地址，可留空
 - `notification_enabled`：当前账号是否发送通知
 
+### 常用地区码
+
+| 地区 | 地区码 |
+|---|---|
+| 美国东部（俄亥俄） | `us-east-2` |
+| 美国东部（弗吉尼亚北部） | `us-east-1` |
+| 美国西部（俄勒冈） | `us-west-2` |
+| 亚太地区（孟买） | `ap-south-1` |
+| 亚太地区（首尔） | `ap-northeast-2` |
+| 亚太地区（新加坡） | `ap-southeast-1` |
+| 亚太地区（悉尼） | `ap-southeast-2` |
+| 亚太地区（东京） | `ap-northeast-1` |
+| 加拿大（中部） | `ca-central-1` |
+| 欧洲（法兰克福） | `eu-central-1` |
+| 欧洲（爱尔兰） | `eu-west-1` |
+| 欧洲（伦敦） | `eu-west-2` |
+| 欧洲（巴黎） | `eu-west-3` |
+
 ---
 
 ## 使用方法
