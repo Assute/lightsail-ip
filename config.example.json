@@ -1,0 +1,32 @@
+{
+  "defaults": {
+    "ping_times": 30
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  },
+  "accounts": [
+    {
+      "name": "lightsail-kr",
+      "enabled": true,
+      "region": "ap-northeast-2",
+      "aws_access_key_id": "YOUR_AWS_ACCESS_KEY_ID",
+      "aws_secret_access_key": "YOUR_AWS_SECRET_ACCESS_KEY",
+      "ip": "",
+      "proxy_url": "",
+      "notification_enabled": true
+    },
+    {
+      "name": "lightsail-us",
+      "enabled": false,
+      "region": "us-east-1",
+      "aws_access_key_id": "YOUR_AWS_ACCESS_KEY_ID_2",
+      "aws_secret_access_key": "YOUR_AWS_SECRET_ACCESS_KEY_2",
+      "ip": "",
+      "proxy_url": "",
+      "notification_enabled": true
+    }
+  ]
+}
