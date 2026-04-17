@@ -9,16 +9,21 @@ CRON_MARKER_END="# lightsail-ip managed task end"
 DEFAULT_CRON_LOG_FILE="${SCRIPT_DIR}/lightsail-ip.log"
 DEFAULT_CRON_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 MAX_LOG_SIZE_BYTES=5242880
+STATIC_IP_WAIT_INTERVAL_SECONDS=3
+STATIC_IP_WAIT_MAX_ATTEMPTS=20
 
 PINGTIMES=$DEFAULT_PING_TIMES
 TELEGRAM_ENABLED="false"
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
+CLOUDFLARE_TOKEN=""
 CURRENT_ACCOUNT_NAME=""
 CURRENT_REGION=""
 CURRENT_PROXY_URL=""
 CURRENT_NOTIFICATION_ENABLED="true"
+CURRENT_CLOUDFLARE_DOMAIN=""
 MATCHED_ACCOUNT=0
+CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 
 readonly SCRIPT_DIR
 readonly CONFIG_FILE
@@ -29,6 +34,9 @@ readonly CRON_MARKER_END
 readonly DEFAULT_CRON_LOG_FILE
 readonly DEFAULT_CRON_PATH
 readonly MAX_LOG_SIZE_BYTES
+readonly STATIC_IP_WAIT_INTERVAL_SECONDS
+readonly STATIC_IP_WAIT_MAX_ATTEMPTS
+readonly CLOUDFLARE_API_BASE
 
 export AWS_PAGER=""
 
@@ -428,6 +436,233 @@ function save_account_ip {
 	return 0
 }
 
+function get_cloudflare_error_message {
+	local response_json="$1"
+	printf '%s' "$response_json" | jq -r '
+		if ((.errors // []) | length) > 0 then
+			(.errors | map(.message // (.code | tostring)) | join("; "))
+		elif ((.messages // []) | length) > 0 then
+			(.messages | map(.message // .) | join("; "))
+		else
+			"unknown error"
+		end
+	'
+}
+
+function cloudflare_api_json {
+	local method="$1"
+	local url="$2"
+	local payload="${3:-}"
+	local response_json
+	local error_message
+
+	if [ -n "$payload" ]
+	then
+		if ! response_json=$(curl -sS -X "$method" "$url" \
+			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+			-H "Content-Type: application/json" \
+			--data "$payload")
+		then
+			echo "Cloudflare API 请求失败" >&2
+			return 1
+		fi
+	else
+		if ! response_json=$(curl -sS -X "$method" "$url" \
+			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+			-H "Content-Type: application/json")
+		then
+			echo "Cloudflare API 请求失败" >&2
+			return 1
+		fi
+	fi
+
+	if [ "$(printf '%s' "$response_json" | jq -r '.success // false')" != "true" ]
+	then
+		error_message=$(get_cloudflare_error_message "$response_json")
+		echo "Cloudflare API 请求失败: ${error_message}" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$response_json"
+}
+
+function find_cloudflare_zone_json {
+	local domain="$1"
+	local zone_candidate
+	local response_json
+	local error_message
+	local i
+	local j
+	local label_count
+	local -a labels
+
+	IFS='.' read -r -a labels <<< "$domain"
+	label_count=${#labels[@]}
+	if [ "$label_count" -lt 2 ]
+	then
+		echo "Cloudflare 域名格式无效: ${domain}" >&2
+		return 1
+	fi
+
+	for (( i = 0 ; i < label_count - 1 ; i++ ))
+	do
+		zone_candidate="${labels[$i]}"
+		for (( j = i + 1 ; j < label_count ; j++ ))
+		do
+			zone_candidate="${zone_candidate}.${labels[$j]}"
+		done
+
+		if ! response_json=$(curl -sS -G "${CLOUDFLARE_API_BASE}/zones" \
+			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+			-H "Content-Type: application/json" \
+			--data-urlencode "name=${zone_candidate}" \
+			--data-urlencode "per_page=1")
+		then
+			echo "Cloudflare Zone 查询失败" >&2
+			return 1
+		fi
+
+		if [ "$(printf '%s' "$response_json" | jq -r '.success // false')" != "true" ]
+		then
+			error_message=$(get_cloudflare_error_message "$response_json")
+			echo "Cloudflare Zone 查询失败: ${error_message}" >&2
+			return 1
+		fi
+
+		if [ "$(printf '%s' "$response_json" | jq -r '.result | length')" -gt 0 ]
+		then
+			printf '%s\n' "$response_json"
+			return 0
+		fi
+	done
+
+	echo "找不到与域名匹配的 Cloudflare Zone: ${domain}" >&2
+	return 1
+}
+
+function get_cloudflare_a_records_json {
+	local zone_id="$1"
+	local domain="$2"
+	local response_json
+	local error_message
+
+	if ! response_json=$(curl -sS -G "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records" \
+		-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+		-H "Content-Type: application/json" \
+		--data-urlencode "type=A" \
+		--data-urlencode "name=${domain}" \
+		--data-urlencode "per_page=100")
+	then
+		echo "Cloudflare DNS 记录查询失败" >&2
+		return 1
+	fi
+
+	if [ "$(printf '%s' "$response_json" | jq -r '.success // false')" != "true" ]
+	then
+		error_message=$(get_cloudflare_error_message "$response_json")
+		echo "Cloudflare DNS 记录查询失败: ${error_message}" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$response_json"
+}
+
+function update_cloudflare_dns_if_needed {
+	local new_ip="$1"
+	local zone_json
+	local zone_id
+	local zone_name
+	local records_json
+	local record_count
+	local record_json
+	local record_id
+	local record_ttl
+	local record_proxied
+	local payload
+	local updated_count=0
+
+	if [ -z "$CURRENT_CLOUDFLARE_DOMAIN" ]
+	then
+		return 0
+	fi
+
+	if [ -z "$CLOUDFLARE_TOKEN" ]
+	then
+		echo "已填写域名但未配置 Cloudflare 全局令牌，跳过 DNS 更新" >&2
+		return 1
+	fi
+
+	if ! zone_json=$(find_cloudflare_zone_json "$CURRENT_CLOUDFLARE_DOMAIN")
+	then
+		return 1
+	fi
+
+	zone_id=$(printf '%s' "$zone_json" | jq -r '.result[0].id // empty')
+	zone_name=$(printf '%s' "$zone_json" | jq -r '.result[0].name // empty')
+	if [ -z "$zone_id" ]
+	then
+		echo "Cloudflare Zone 信息不完整: ${CURRENT_CLOUDFLARE_DOMAIN}" >&2
+		return 1
+	fi
+
+	if ! records_json=$(get_cloudflare_a_records_json "$zone_id" "$CURRENT_CLOUDFLARE_DOMAIN")
+	then
+		return 1
+	fi
+
+	record_count=$(printf '%s' "$records_json" | jq -r '.result | length')
+	if [ "$record_count" -eq 0 ]
+	then
+		payload=$(jq -nc --arg name "$CURRENT_CLOUDFLARE_DOMAIN" --arg content "$new_ip" \
+			'{type:"A", name:$name, content:$content, ttl:1, proxied:false}')
+		if ! cloudflare_api_json "POST" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records" "$payload" > /dev/null
+		then
+			return 1
+		fi
+
+		echo "Cloudflare DNS 已创建: ${CURRENT_CLOUDFLARE_DOMAIN} -> ${new_ip} (zone: ${zone_name})"
+		return 0
+	fi
+
+	while IFS= read -r record_json
+	do
+		[ -z "$record_json" ] && continue
+		record_id=$(printf '%s' "$record_json" | jq -r '.id // empty')
+		record_ttl=$(printf '%s' "$record_json" | jq -r '.ttl // 1')
+		record_proxied=$(printf '%s' "$record_json" | jq -r '.proxied // false')
+
+		if [ -z "$record_id" ]
+		then
+			echo "Cloudflare DNS 记录缺少 id，跳过" >&2
+			continue
+		fi
+
+		payload=$(jq -nc \
+			--arg type "A" \
+			--arg name "$CURRENT_CLOUDFLARE_DOMAIN" \
+			--arg content "$new_ip" \
+			--argjson ttl "$record_ttl" \
+			--argjson proxied "$record_proxied" \
+			'{type:$type, name:$name, content:$content, ttl:$ttl, proxied:$proxied}')
+
+		if ! cloudflare_api_json "PUT" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records/${record_id}" "$payload" > /dev/null
+		then
+			return 1
+		fi
+
+		updated_count=$((updated_count + 1))
+	done < <(printf '%s' "$records_json" | jq -c '.result[]')
+
+	if [ "$updated_count" -eq 0 ]
+	then
+		echo "Cloudflare DNS 没有可更新的 A 记录: ${CURRENT_CLOUDFLARE_DOMAIN}" >&2
+		return 1
+	fi
+
+	echo "Cloudflare DNS 已更新: ${CURRENT_CLOUDFLARE_DOMAIN} -> ${new_ip} (zone: ${zone_name}, 记录数: ${updated_count})"
+	return 0
+}
+
 function fetch_static_ips_from_aws {
 	local ipjson
 	local candidates_json
@@ -445,6 +680,95 @@ function fetch_static_ips_from_aws {
 	fi
 
 	printf '%s\n' "$candidates_json"
+}
+
+function fetch_instance_public_ips_from_aws {
+	local instance_json
+	local candidates_json
+
+	if ! instance_json=$(aws_call lightsail --region "$CURRENT_REGION" get-instances)
+	then
+		echo "获取实例列表失败: ${CURRENT_ACCOUNT_NAME}" >&2
+		return 1
+	fi
+
+	if ! candidates_json=$(printf '%s' "$instance_json" | jq -c '[.instances[]? | select((.name // "") != "" and (.publicIpAddress // "") != "") | {instance_name: .name, ip: .publicIpAddress}]')
+	then
+		echo "解析实例列表失败: ${CURRENT_ACCOUNT_NAME}" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$candidates_json"
+}
+
+function generate_auto_static_ip_name {
+	local timestamp
+	timestamp=$(date +%Y%m%d%H%M%S)
+	printf 'auto-%s-%s-%s' "$CURRENT_ACCOUNT_NAME" "$CURRENT_REGION" "$timestamp" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-'
+}
+
+function get_static_ip_json {
+	local static_ip_name="$1"
+	aws_call lightsail --region "$CURRENT_REGION" get-static-ip --static-ip-name "$static_ip_name"
+}
+
+function wait_for_static_ip_attachment {
+	local static_ip_name="$1"
+	local instance_name="$2"
+	local attempt
+	local static_ip_json
+	local attached_to
+	local ip_address
+
+	for (( attempt = 1 ; attempt <= STATIC_IP_WAIT_MAX_ATTEMPTS ; attempt++ ))
+	do
+		if ! static_ip_json=$(get_static_ip_json "$static_ip_name")
+		then
+			sleep "$STATIC_IP_WAIT_INTERVAL_SECONDS"
+			continue
+		fi
+
+		attached_to=$(printf '%s' "$static_ip_json" | jq -r '.staticIp.attachedTo // empty')
+		ip_address=$(printf '%s' "$static_ip_json" | jq -r '.staticIp.ipAddress // empty')
+		if [ "$attached_to" = "$instance_name" ] && [ -n "$ip_address" ]
+		then
+			printf '%s\n' "$ip_address"
+			return 0
+		fi
+
+		sleep "$STATIC_IP_WAIT_INTERVAL_SECONDS"
+	done
+
+	echo "等待静态IP绑定完成超时: ${static_ip_name}" >&2
+	return 1
+}
+
+function allocate_and_attach_static_ip_to_instance {
+	local instance_name="$1"
+	local static_ip_name
+	local new_ip
+
+	static_ip_name=$(generate_auto_static_ip_name)
+
+	if ! aws_call lightsail --region "$CURRENT_REGION" allocate-static-ip --static-ip-name "$static_ip_name" > /dev/null
+	then
+		echo "为实例模式自动创建静态IP失败: ${instance_name}" >&2
+		return 1
+	fi
+
+	if ! aws_call lightsail --region "$CURRENT_REGION" attach-static-ip --static-ip-name "$static_ip_name" --instance-name "$instance_name" > /dev/null
+	then
+		echo "自动绑定新静态IP失败: ${instance_name}" >&2
+		aws_call lightsail --region "$CURRENT_REGION" release-static-ip --static-ip-name "$static_ip_name" > /dev/null 2>&1 || true
+		return 1
+	fi
+
+	if ! new_ip=$(wait_for_static_ip_attachment "$static_ip_name" "$instance_name")
+	then
+		return 1
+	fi
+
+	printf '%s\n' "$new_ip"
 }
 
 function select_static_ip_entry {
@@ -488,6 +812,47 @@ function select_static_ip_entry {
 	printf '%s' "$candidates_json" | jq -c '.[0]'
 }
 
+function select_instance_ip_entry {
+	local candidates_json="$1"
+	local current_ip="$2"
+	local candidate_count
+	local matched_count
+
+	candidate_count=$(printf '%s' "$candidates_json" | jq -r 'length')
+	if [ "$candidate_count" -eq 0 ]
+	then
+		echo "当前账号没有可用的实例公网IP" >&2
+		return 1
+	fi
+
+	if [ -n "$current_ip" ]
+	then
+		matched_count=$(printf '%s' "$candidates_json" | jq -r --arg ip "$current_ip" '[.[] | select(.ip == $ip)] | length')
+		if [ "$matched_count" -gt 0 ]
+		then
+			printf '%s' "$candidates_json" | jq -c --arg ip "$current_ip" 'first(.[] | select(.ip == $ip))'
+			return 0
+		fi
+
+		if [ "$candidate_count" -eq 1 ]
+		then
+			echo "配置里的IP未在 AWS 当前实例公网IP列表中找到，改用账号唯一的实例公网IP" >&2
+			printf '%s' "$candidates_json" | jq -c '.[0]'
+			return 0
+		fi
+
+		echo "配置里的IP未在 AWS 当前实例公网IP列表中找到，且账号下有多个实例公网IP，无法确定目标" >&2
+		return 1
+	fi
+
+	if [ "$candidate_count" -gt 1 ]
+	then
+		echo "配置里没有IP，账号下有多个实例公网IP，默认使用第一个实例公网IP进行初始化" >&2
+	fi
+
+	printf '%s' "$candidates_json" | jq -c '.[0]'
+}
+
 function load_or_init_account_ip {
 	local account_json="$1"
 	local current_ip
@@ -507,9 +872,23 @@ function load_or_init_account_ip {
 		return 1
 	fi
 
-	if ! target_entry_json=$(select_static_ip_entry "$candidates_json" "")
+	if [ "$(printf '%s' "$candidates_json" | jq -r 'length')" -gt 0 ]
 	then
-		return 1
+		if ! target_entry_json=$(select_static_ip_entry "$candidates_json" "")
+		then
+			return 1
+		fi
+	else
+		echo "当前账号没有静态IP，改为使用实例公网IP初始化" >&2
+		if ! candidates_json=$(fetch_instance_public_ips_from_aws)
+		then
+			return 1
+		fi
+
+		if ! target_entry_json=$(select_instance_ip_entry "$candidates_json" "")
+		then
+			return 1
+		fi
 	fi
 
 	current_ip=$(printf '%s' "$target_entry_json" | jq -r '.ip // empty')
@@ -531,13 +910,38 @@ function load_or_init_account_ip {
 function load_rotation_target {
 	local current_ip="$1"
 	local candidates_json
+	local instance_candidates_json
+	local instance_entry_json
+	local target_entry_json
 
 	if ! candidates_json=$(fetch_static_ips_from_aws)
 	then
 		return 1
 	fi
 
-	select_static_ip_entry "$candidates_json" "$current_ip"
+	if [ "$(printf '%s' "$candidates_json" | jq -r 'length')" -gt 0 ]
+	then
+		if ! target_entry_json=$(select_static_ip_entry "$candidates_json" "$current_ip")
+		then
+			return 1
+		fi
+
+		printf '%s' "$target_entry_json" | jq -c '. + {mode:"static"}'
+		return 0
+	fi
+
+	if ! instance_candidates_json=$(fetch_instance_public_ips_from_aws)
+	then
+		return 1
+	fi
+
+	if ! instance_entry_json=$(select_instance_ip_entry "$instance_candidates_json" "$current_ip")
+	then
+		return 1
+	fi
+
+	printf '%s' "$instance_entry_json" | jq -c '. + {mode:"instance"}'
+	return 0
 }
 
 function load_config {
@@ -563,6 +967,7 @@ function load_config {
 	TELEGRAM_ENABLED=$(jq -r 'if .telegram.enabled == null then false else .telegram.enabled end' "$CONFIG_FILE")
 	TELEGRAM_BOT_TOKEN=$(jq -r '.telegram.bot_token // empty' "$CONFIG_FILE")
 	TELEGRAM_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "$CONFIG_FILE")
+	CLOUDFLARE_TOKEN=$(jq -r '.cloudflare.token // empty' "$CONFIG_FILE")
 
 	if [ "$(jq -r '.accounts | length' "$CONFIG_FILE")" -eq 0 ]
 	then
@@ -616,12 +1021,14 @@ function configure_account_environment {
 	local access_key_id
 	local secret_access_key
 	local proxy_url
+	local cloudflare_domain
 
 	CURRENT_ACCOUNT_NAME=$(printf '%s' "$account_json" | jq -r '.name // empty')
 	CURRENT_REGION=$(printf '%s' "$account_json" | jq -r '.region // empty')
 	access_key_id=$(printf '%s' "$account_json" | jq -r '.aws_access_key_id // empty')
 	secret_access_key=$(printf '%s' "$account_json" | jq -r '.aws_secret_access_key // empty')
 	proxy_url=$(printf '%s' "$account_json" | jq -r '.proxy_url // empty')
+	cloudflare_domain=$(printf '%s' "$account_json" | jq -r '.domain // empty')
 	CURRENT_NOTIFICATION_ENABLED=$(printf '%s' "$account_json" | jq -r 'if .notification_enabled == null then true else .notification_enabled end')
 
 	if [ -z "$CURRENT_ACCOUNT_NAME" ]
@@ -637,6 +1044,7 @@ function configure_account_environment {
 	fi
 
 	CURRENT_PROXY_URL="$proxy_url"
+	CURRENT_CLOUDFLARE_DOMAIN="$cloudflare_domain"
 
 	clear_aws_environment
 	export AWS_ACCESS_KEY_ID="$access_key_id"
@@ -654,6 +1062,7 @@ function process_account {
 	local current_ip
 	local old_ip
 	local target_entry_json
+	local rotation_mode
 	local instance_name
 	local static_ip_name
 	local instancejson
@@ -711,78 +1120,109 @@ function process_account {
 
 		if ! target_entry_json=$(load_rotation_target "$old_ip")
 		then
-			echo "无法确定需要更换的静态IP"
+			echo "无法确定需要更换的IP目标"
 			rm -f "$tmp_file"
 			clear_proxy_environment
 			clear_aws_environment
 			return 1
 		fi
 
+		rotation_mode=$(printf '%s' "$target_entry_json" | jq -r '.mode // "static"')
 		instance_name=$(printf '%s' "$target_entry_json" | jq -r '.instance_name // empty')
 		static_ip_name=$(printf '%s' "$target_entry_json" | jq -r '.static_ip_name // empty')
 
 		echo "实例名称: ${instance_name:-未绑定}"
-		echo "静态IP名称: ${static_ip_name:-未知}"
-
-		if [ -z "$instance_name" ] || [ -z "$static_ip_name" ]
+		if [ "$rotation_mode" = "static" ]
 		then
-			echo "静态IP信息不完整，无法更换"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
-		fi
+			echo "静态IP名称: ${static_ip_name:-未知}"
 
-		if ! aws_call lightsail --region "$CURRENT_REGION" release-static-ip --static-ip-name "$static_ip_name" > /dev/null
-		then
-			echo "释放静态IP失败: ${static_ip_name}"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
-		fi
+			if [ -z "$instance_name" ] || [ -z "$static_ip_name" ]
+			then
+				echo "静态IP信息不完整，无法更换"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
 
-		if ! aws_call lightsail --region "$CURRENT_REGION" allocate-static-ip --static-ip-name "$static_ip_name" > /dev/null
-		then
-			echo "新建静态IP失败: ${static_ip_name}"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
-		fi
+			if ! aws_call lightsail --region "$CURRENT_REGION" release-static-ip --static-ip-name "$static_ip_name" > /dev/null
+			then
+				echo "释放静态IP失败: ${static_ip_name}"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
 
-		if ! aws_call lightsail --region "$CURRENT_REGION" attach-static-ip --static-ip-name "$static_ip_name" --instance-name "$instance_name" > /dev/null
-		then
-			echo "绑定静态IP失败: ${static_ip_name}"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
-		fi
+			if ! aws_call lightsail --region "$CURRENT_REGION" allocate-static-ip --static-ip-name "$static_ip_name" > /dev/null
+			then
+				echo "新建静态IP失败: ${static_ip_name}"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
 
-		if ! instancejson=$(aws_call lightsail --region "$CURRENT_REGION" get-instance --instance-name "$instance_name")
-		then
-			echo "获取新IP失败: ${instance_name}"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
-		fi
+			if ! aws_call lightsail --region "$CURRENT_REGION" attach-static-ip --static-ip-name "$static_ip_name" --instance-name "$instance_name" > /dev/null
+			then
+				echo "绑定静态IP失败: ${static_ip_name}"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
 
-		new_ip=$(printf '%s' "$instancejson" | jq -r '.instance.publicIpAddress // empty')
-		if [ -z "$new_ip" ]
-		then
-			echo "没有获取到新IP"
-			rm -f "$tmp_file"
-			clear_proxy_environment
-			clear_aws_environment
-			return 1
+			if ! instancejson=$(aws_call lightsail --region "$CURRENT_REGION" get-instance --instance-name "$instance_name")
+			then
+				echo "获取新IP失败: ${instance_name}"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
+
+			new_ip=$(printf '%s' "$instancejson" | jq -r '.instance.publicIpAddress // empty')
+			if [ -z "$new_ip" ]
+			then
+				echo "没有获取到新IP"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
+		else
+			if [ -z "$instance_name" ]
+			then
+				echo "实例公网IP信息不完整，无法更换"
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
+
+			echo "当前是实例公网IP模式，自动创建并绑定新的静态IP"
+			if ! new_ip=$(allocate_and_attach_static_ip_to_instance "$instance_name")
+			then
+				rm -f "$tmp_file"
+				clear_proxy_environment
+				clear_aws_environment
+				return 1
+			fi
 		fi
 
 		echo -e "3. 新IP地址: ${new_ip}"
 		if ! save_account_ip "$new_ip"
 		then
 			echo "新IP写回配置文件失败: ${CURRENT_ACCOUNT_NAME}"
+			rm -f "$tmp_file"
+			clear_proxy_environment
+			clear_aws_environment
+			return 1
+		fi
+
+		if ! update_cloudflare_dns_if_needed "$new_ip"
+		then
+			echo "Cloudflare DNS 更新失败: ${CURRENT_ACCOUNT_NAME}"
 			rm -f "$tmp_file"
 			clear_proxy_environment
 			clear_aws_environment
