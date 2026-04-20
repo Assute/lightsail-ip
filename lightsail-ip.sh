@@ -16,12 +16,12 @@ PINGTIMES=$DEFAULT_PING_TIMES
 TELEGRAM_ENABLED="false"
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
-CLOUDFLARE_TOKEN=""
+CLOUDFLARE_TOKENS_JSON="[]"
 CURRENT_ACCOUNT_NAME=""
 CURRENT_REGION=""
 CURRENT_PROXY_URL=""
 CURRENT_NOTIFICATION_ENABLED="true"
-CURRENT_CLOUDFLARE_DOMAIN=""
+CURRENT_CLOUDFLARE_DOMAINS_JSON="[]"
 MATCHED_ACCOUNT=0
 CLOUDFLARE_API_BASE="https://api.cloudflare.com/client/v4"
 
@@ -450,16 +450,17 @@ function get_cloudflare_error_message {
 }
 
 function cloudflare_api_json {
-	local method="$1"
-	local url="$2"
-	local payload="${3:-}"
+	local token="$1"
+	local method="$2"
+	local url="$3"
+	local payload="${4:-}"
 	local response_json
 	local error_message
 
 	if [ -n "$payload" ]
 	then
 		if ! response_json=$(curl -sS -X "$method" "$url" \
-			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+			-H "Authorization: Bearer ${token}" \
 			-H "Content-Type: application/json" \
 			--data "$payload")
 		then
@@ -468,7 +469,7 @@ function cloudflare_api_json {
 		fi
 	else
 		if ! response_json=$(curl -sS -X "$method" "$url" \
-			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+			-H "Authorization: Bearer ${token}" \
 			-H "Content-Type: application/json")
 		then
 			echo "Cloudflare API 请求失败" >&2
@@ -486,68 +487,92 @@ function cloudflare_api_json {
 	printf '%s\n' "$response_json"
 }
 
-function find_cloudflare_zone_json {
+function find_cloudflare_token_entry_json {
 	local domain="$1"
-	local zone_candidate
-	local response_json
-	local error_message
-	local i
-	local j
-	local label_count
-	local -a labels
+	local token_entry_json
+	local root_domain
+	local best_match_json=""
+	local best_match_length=0
+	local root_length
 
-	IFS='.' read -r -a labels <<< "$domain"
-	label_count=${#labels[@]}
-	if [ "$label_count" -lt 2 ]
+	while IFS= read -r token_entry_json
+	do
+		[ -z "$token_entry_json" ] && continue
+		root_domain=$(printf '%s' "$token_entry_json" | jq -r '.root_domain // empty')
+		[ -z "$root_domain" ] && continue
+
+		if [ "$domain" = "$root_domain" ] || [[ "$domain" == *".${root_domain}" ]]
+		then
+			root_length=${#root_domain}
+			if [ "$root_length" -gt "$best_match_length" ]
+			then
+				best_match_json="$token_entry_json"
+				best_match_length=$root_length
+			fi
+		fi
+	done < <(printf '%s' "$CLOUDFLARE_TOKENS_JSON" | jq -c '.[]?')
+
+	if [ -z "$best_match_json" ]
 	then
-		echo "Cloudflare 域名格式无效: ${domain}" >&2
+		echo "找不到可用于域名 ${domain} 的 Cloudflare 令牌配置" >&2
 		return 1
 	fi
 
-	for (( i = 0 ; i < label_count - 1 ; i++ ))
-	do
-		zone_candidate="${labels[$i]}"
-		for (( j = i + 1 ; j < label_count ; j++ ))
-		do
-			zone_candidate="${zone_candidate}.${labels[$j]}"
-		done
+	printf '%s\n' "$best_match_json"
+}
 
-		if ! response_json=$(curl -sS -G "${CLOUDFLARE_API_BASE}/zones" \
-			-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
-			-H "Content-Type: application/json" \
-			--data-urlencode "name=${zone_candidate}" \
-			--data-urlencode "per_page=1")
-		then
-			echo "Cloudflare Zone 查询失败" >&2
-			return 1
-		fi
+function find_cloudflare_zone_json {
+	local domain="$1"
+	local token_entry_json="$2"
+	local root_domain
+	local token
+	local response_json
+	local error_message
 
-		if [ "$(printf '%s' "$response_json" | jq -r '.success // false')" != "true" ]
-		then
-			error_message=$(get_cloudflare_error_message "$response_json")
-			echo "Cloudflare Zone 查询失败: ${error_message}" >&2
-			return 1
-		fi
+	root_domain=$(printf '%s' "$token_entry_json" | jq -r '.root_domain // empty')
+	token=$(printf '%s' "$token_entry_json" | jq -r '.token // empty')
 
-		if [ "$(printf '%s' "$response_json" | jq -r '.result | length')" -gt 0 ]
-		then
-			printf '%s\n' "$response_json"
-			return 0
-		fi
-	done
+	if [ -z "$root_domain" ] || [ -z "$token" ]
+	then
+		echo "Cloudflare 令牌配置不完整: ${domain}" >&2
+		return 1
+	fi
 
-	echo "找不到与域名匹配的 Cloudflare Zone: ${domain}" >&2
-	return 1
+	if ! response_json=$(curl -sS -G "${CLOUDFLARE_API_BASE}/zones" \
+		-H "Authorization: Bearer ${token}" \
+		-H "Content-Type: application/json" \
+		--data-urlencode "name=${root_domain}" \
+		--data-urlencode "per_page=1")
+	then
+		echo "Cloudflare Zone 查询失败" >&2
+		return 1
+	fi
+
+	if [ "$(printf '%s' "$response_json" | jq -r '.success // false')" != "true" ]
+	then
+		error_message=$(get_cloudflare_error_message "$response_json")
+		echo "Cloudflare Zone 查询失败: ${error_message}" >&2
+		return 1
+	fi
+
+	if [ "$(printf '%s' "$response_json" | jq -r '.result | length')" -eq 0 ]
+	then
+		echo "找不到与域名匹配的 Cloudflare Zone: ${domain}" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$response_json"
 }
 
 function get_cloudflare_a_records_json {
 	local zone_id="$1"
 	local domain="$2"
+	local token="$3"
 	local response_json
 	local error_message
 
 	if ! response_json=$(curl -sS -G "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records" \
-		-H "Authorization: Bearer ${CLOUDFLARE_TOKEN}" \
+		-H "Authorization: Bearer ${token}" \
 		-H "Content-Type: application/json" \
 		--data-urlencode "type=A" \
 		--data-urlencode "name=${domain}" \
@@ -567,8 +592,11 @@ function get_cloudflare_a_records_json {
 	printf '%s\n' "$response_json"
 }
 
-function update_cloudflare_dns_if_needed {
-	local new_ip="$1"
+function update_single_cloudflare_domain {
+	local domain="$1"
+	local new_ip="$2"
+	local token_entry_json
+	local token
 	local zone_json
 	local zone_id
 	local zone_name
@@ -581,18 +609,19 @@ function update_cloudflare_dns_if_needed {
 	local payload
 	local updated_count=0
 
-	if [ -z "$CURRENT_CLOUDFLARE_DOMAIN" ]
+	if ! token_entry_json=$(find_cloudflare_token_entry_json "$domain")
 	then
-		return 0
-	fi
-
-	if [ -z "$CLOUDFLARE_TOKEN" ]
-	then
-		echo "已填写域名但未配置 Cloudflare 全局令牌，跳过 DNS 更新" >&2
 		return 1
 	fi
 
-	if ! zone_json=$(find_cloudflare_zone_json "$CURRENT_CLOUDFLARE_DOMAIN")
+	token=$(printf '%s' "$token_entry_json" | jq -r '.token // empty')
+	if [ -z "$token" ]
+	then
+		echo "Cloudflare 令牌配置不完整: ${domain}" >&2
+		return 1
+	fi
+
+	if ! zone_json=$(find_cloudflare_zone_json "$domain" "$token_entry_json")
 	then
 		return 1
 	fi
@@ -601,11 +630,11 @@ function update_cloudflare_dns_if_needed {
 	zone_name=$(printf '%s' "$zone_json" | jq -r '.result[0].name // empty')
 	if [ -z "$zone_id" ]
 	then
-		echo "Cloudflare Zone 信息不完整: ${CURRENT_CLOUDFLARE_DOMAIN}" >&2
+		echo "Cloudflare Zone 信息不完整: ${domain}" >&2
 		return 1
 	fi
 
-	if ! records_json=$(get_cloudflare_a_records_json "$zone_id" "$CURRENT_CLOUDFLARE_DOMAIN")
+	if ! records_json=$(get_cloudflare_a_records_json "$zone_id" "$domain" "$token")
 	then
 		return 1
 	fi
@@ -613,14 +642,14 @@ function update_cloudflare_dns_if_needed {
 	record_count=$(printf '%s' "$records_json" | jq -r '.result | length')
 	if [ "$record_count" -eq 0 ]
 	then
-		payload=$(jq -nc --arg name "$CURRENT_CLOUDFLARE_DOMAIN" --arg content "$new_ip" \
+		payload=$(jq -nc --arg name "$domain" --arg content "$new_ip" \
 			'{type:"A", name:$name, content:$content, ttl:1, proxied:false}')
-		if ! cloudflare_api_json "POST" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records" "$payload" > /dev/null
+		if ! cloudflare_api_json "$token" "POST" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records" "$payload" > /dev/null
 		then
 			return 1
 		fi
 
-		echo "Cloudflare DNS 已创建: ${CURRENT_CLOUDFLARE_DOMAIN} -> ${new_ip} (zone: ${zone_name})"
+		echo "Cloudflare DNS 已创建: ${domain} -> ${new_ip} (zone: ${zone_name})"
 		return 0
 	fi
 
@@ -633,19 +662,19 @@ function update_cloudflare_dns_if_needed {
 
 		if [ -z "$record_id" ]
 		then
-			echo "Cloudflare DNS 记录缺少 id，跳过" >&2
+			echo "Cloudflare DNS 记录缺少 id，跳过: ${domain}" >&2
 			continue
 		fi
 
 		payload=$(jq -nc \
 			--arg type "A" \
-			--arg name "$CURRENT_CLOUDFLARE_DOMAIN" \
+			--arg name "$domain" \
 			--arg content "$new_ip" \
 			--argjson ttl "$record_ttl" \
 			--argjson proxied "$record_proxied" \
 			'{type:$type, name:$name, content:$content, ttl:$ttl, proxied:$proxied}')
 
-		if ! cloudflare_api_json "PUT" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records/${record_id}" "$payload" > /dev/null
+		if ! cloudflare_api_json "$token" "PUT" "${CLOUDFLARE_API_BASE}/zones/${zone_id}/dns_records/${record_id}" "$payload" > /dev/null
 		then
 			return 1
 		fi
@@ -655,11 +684,46 @@ function update_cloudflare_dns_if_needed {
 
 	if [ "$updated_count" -eq 0 ]
 	then
-		echo "Cloudflare DNS 没有可更新的 A 记录: ${CURRENT_CLOUDFLARE_DOMAIN}" >&2
+		echo "Cloudflare DNS 没有可更新的 A 记录: ${domain}" >&2
 		return 1
 	fi
 
-	echo "Cloudflare DNS 已更新: ${CURRENT_CLOUDFLARE_DOMAIN} -> ${new_ip} (zone: ${zone_name}, 记录数: ${updated_count})"
+	echo "Cloudflare DNS 已更新: ${domain} -> ${new_ip} (zone: ${zone_name}, 记录数: ${updated_count})"
+	return 0
+}
+
+function update_cloudflare_dns_if_needed {
+	local new_ip="$1"
+	local domain
+	local updated_count=0
+
+	if [ "$(printf '%s' "$CURRENT_CLOUDFLARE_DOMAINS_JSON" | jq -r 'length')" -eq 0 ]
+	then
+		return 0
+	fi
+
+	if [ "$(printf '%s' "$CLOUDFLARE_TOKENS_JSON" | jq -r 'length')" -eq 0 ]
+	then
+		echo "已填写域名但未配置 Cloudflare 令牌列表，跳过 DNS 更新" >&2
+		return 1
+	fi
+
+	while IFS= read -r domain
+	do
+		[ -z "$domain" ] && continue
+		if ! update_single_cloudflare_domain "$domain" "$new_ip"
+		then
+			return 1
+		fi
+		updated_count=$((updated_count + 1))
+	done < <(printf '%s' "$CURRENT_CLOUDFLARE_DOMAINS_JSON" | jq -r '.[]')
+
+	if [ "$updated_count" -eq 0 ]
+	then
+		return 0
+	fi
+
+	echo "Cloudflare 域名更新完成，数量: ${updated_count}"
 	return 0
 }
 
@@ -967,7 +1031,27 @@ function load_config {
 	TELEGRAM_ENABLED=$(jq -r 'if .telegram.enabled == null then false else .telegram.enabled end' "$CONFIG_FILE")
 	TELEGRAM_BOT_TOKEN=$(jq -r '.telegram.bot_token // empty' "$CONFIG_FILE")
 	TELEGRAM_CHAT_ID=$(jq -r '.telegram.chat_id // empty' "$CONFIG_FILE")
-	CLOUDFLARE_TOKEN=$(jq -r '.cloudflare.token // empty' "$CONFIG_FILE")
+	CLOUDFLARE_TOKENS_JSON=$(jq -c '
+		if ((.cloudflare.tokens // null) | type) == "array" then
+			[
+				.cloudflare.tokens[]?
+				| {
+					root_domain: (.root_domain // empty),
+					token: (.token // empty)
+				}
+				| select(.root_domain != "" and .token != "")
+			]
+		elif (.cloudflare.root_domain // empty) != "" and (.cloudflare.token // empty) != "" then
+			[
+				{
+					root_domain: .cloudflare.root_domain,
+					token: .cloudflare.token
+				}
+			]
+		else
+			[]
+		end
+	' "$CONFIG_FILE")
 
 	if [ "$(jq -r '.accounts | length' "$CONFIG_FILE")" -eq 0 ]
 	then
@@ -1021,14 +1105,25 @@ function configure_account_environment {
 	local access_key_id
 	local secret_access_key
 	local proxy_url
-	local cloudflare_domain
+	local cloudflare_domains_json
 
 	CURRENT_ACCOUNT_NAME=$(printf '%s' "$account_json" | jq -r '.name // empty')
 	CURRENT_REGION=$(printf '%s' "$account_json" | jq -r '.region // empty')
 	access_key_id=$(printf '%s' "$account_json" | jq -r '.aws_access_key_id // empty')
 	secret_access_key=$(printf '%s' "$account_json" | jq -r '.aws_secret_access_key // empty')
 	proxy_url=$(printf '%s' "$account_json" | jq -r '.proxy_url // empty')
-	cloudflare_domain=$(printf '%s' "$account_json" | jq -r '.domain // empty')
+	cloudflare_domains_json=$(printf '%s' "$account_json" | jq -c '
+		if ((.domains // null) | type) == "array" then
+			[
+				.domains[]?
+				| select(type == "string" and . != "")
+			] | unique
+		elif (.domain // empty) != "" then
+			[.domain]
+		else
+			[]
+		end
+	')
 	CURRENT_NOTIFICATION_ENABLED=$(printf '%s' "$account_json" | jq -r 'if .notification_enabled == null then true else .notification_enabled end')
 
 	if [ -z "$CURRENT_ACCOUNT_NAME" ]
@@ -1044,7 +1139,7 @@ function configure_account_environment {
 	fi
 
 	CURRENT_PROXY_URL="$proxy_url"
-	CURRENT_CLOUDFLARE_DOMAIN="$cloudflare_domain"
+	CURRENT_CLOUDFLARE_DOMAINS_JSON="$cloudflare_domains_json"
 
 	clear_aws_environment
 	export AWS_ACCESS_KEY_ID="$access_key_id"

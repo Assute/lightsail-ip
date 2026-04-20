@@ -11,8 +11,10 @@
 - 支持账号级代理
 - 支持 Telegram 机器人通知
 - 支持 Cloudflare A 记录自动更新
-- 支持交互式设置 / 删除定时任务
+- 支持一个账号绑定多个域名
+- 支持多个根域名分别使用不同 Cloudflare Token
 - 支持 Alpine / Debian / Ubuntu
+- 支持交互式设置 / 删除定时任务
 - 日志超过 `5MB` 自动清空
 - 自动把最新 IP 写回 `config.json`
 
@@ -105,7 +107,7 @@ config.json
 cp config.example.json config.json
 ```
 
-### 配置示例
+### 推荐配置示例
 
 ```json
 {
@@ -118,7 +120,16 @@ cp config.example.json config.json
     "chat_id": "YOUR_TELEGRAM_CHAT_ID"
   },
   "cloudflare": {
-    "token": "YOUR_CLOUDFLARE_API_TOKEN"
+    "tokens": [
+      {
+        "root_domain": "example.com",
+        "token": "YOUR_CLOUDFLARE_TOKEN_EXAMPLE_COM"
+      },
+      {
+        "root_domain": "example.net",
+        "token": "YOUR_CLOUDFLARE_TOKEN_EXAMPLE_NET"
+      }
+    ]
   },
   "accounts": [
     {
@@ -129,32 +140,71 @@ cp config.example.json config.json
       "aws_secret_access_key": "YOUR_AWS_SECRET_ACCESS_KEY",
       "ip": "",
       "proxy_url": "",
-      "domain": "example.com",
+      "domains": [
+        "a.example.com",
+        "b.example.com"
+      ],
       "notification_enabled": true
     }
   ]
 }
 ```
 
-### 字段说明
+### 兼容旧写法
 
-#### `defaults`
+脚本仍兼容旧版单 Token / 单域名配置：
+
+```json
+{
+  "cloudflare": {
+    "root_domain": "example.com",
+    "token": "YOUR_CLOUDFLARE_API_TOKEN"
+  },
+  "accounts": [
+    {
+      "domain": "a.example.com"
+    }
+  ]
+}
+```
+
+---
+
+## 字段说明
+
+### `defaults`
 
 - `ping_times`：每次检测 `ping` 次数
 
-#### `telegram`
+### `telegram`
 
 - `enabled`：是否启用 Telegram 通知
 - `bot_token`：Telegram Bot Token
 - `chat_id`：Telegram Chat ID
 
-#### `cloudflare`
+### `cloudflare`
 
-- `token`：Cloudflare API Token
+推荐使用：
 
-> 只有你填写了账号的 `domain` 时，脚本才会尝试更新 Cloudflare DNS。
+```json
+"cloudflare": {
+  "tokens": [
+    {
+      "root_domain": "example.com",
+      "token": "..."
+    }
+  ]
+}
+```
 
-#### `accounts`
+字段说明：
+
+- `root_domain`：Cloudflare Zone 对应根域名
+- `token`：该根域名使用的 Cloudflare API Token
+
+脚本会根据账号中的域名，自动匹配最合适的 `root_domain`。
+
+### `accounts`
 
 - `name`：账号名称
 - `enabled`：是否启用
@@ -163,7 +213,8 @@ cp config.example.json config.json
 - `aws_secret_access_key`：AWS Secret Key
 - `ip`：当前记录 IP，可留空
 - `proxy_url`：代理地址，可留空
-- `domain`：要自动更新到 Cloudflare 的域名，可留空
+- `domains`：要自动更新到 Cloudflare 的域名数组，可留空
+- `domain`：旧版单域名写法，仍兼容
 - `notification_enabled`：当前账号是否发送 Telegram 通知
 
 ### 常用地区码
@@ -186,11 +237,9 @@ cp config.example.json config.json
 
 ---
 
-## 运行逻辑
+## 运行模式
 
-脚本支持两种模式：
-
-### 1. 交互模式
+### 1）交互模式
 
 直接运行：
 
@@ -207,7 +256,7 @@ bash ./lightsail-ip.sh
 0. 返回
 ```
 
-### 2. 执行模式
+### 2）执行模式
 
 - 非交互执行时：自动读取 `config.json` 中所有启用账号并执行
 - 传入账号名时：只执行指定账号
@@ -222,28 +271,47 @@ bash ./lightsail-ip.sh lightsail-kr
 
 ## IP 更换逻辑
 
-脚本会先读取当前账号配置中的 `ip`。
+脚本会先读取账号配置中的 `ip`。
 
 ### 情况 1：账号下已有静态 IP
 
-会按原有逻辑：
+会执行：
 
 1. 检测当前 IP
 2. 释放旧静态 IP
 3. 重新申请同名静态 IP
 4. 绑定到实例
-5. 读取新 IP
+5. 获取新 IP
 6. 写回 `config.json`
 
 ### 情况 2：账号下没有静态 IP
 
-脚本会：
+会执行：
 
 1. 读取实例公网 IP 作为初始 IP
 2. 当检测到需要更换时
-3. 自动新建一个静态 IP
+3. 自动创建新的静态 IP
 4. 自动绑定到实例
 5. 写回 `config.json`
+
+---
+
+## Cloudflare DNS 更新逻辑
+
+当账号配置了 `domain` 或 `domains` 时：
+
+1. 脚本根据域名匹配 `cloudflare.tokens` 中最合适的 `root_domain`
+2. 查询对应 Zone
+3. 查询该域名的 A 记录
+4. 有记录则更新
+5. 没有记录则自动创建
+
+例如：
+
+- 域名：`a.example.com`
+- Token 根域：`example.com`
+
+则会自动使用 `example.com` 对应的 Token。
 
 ---
 
@@ -320,31 +388,6 @@ tail -f /opt/AWS/lightsail-ip.log
 
 - `bot_token`
 - `chat_id`
-
----
-
-## Cloudflare DNS 更新
-
-如果账号配置中填写了：
-
-```json
-"domain": "example.com"
-```
-
-并且全局配置里填写了：
-
-```json
-"cloudflare": {
-  "token": "YOUR_CLOUDFLARE_API_TOKEN"
-}
-```
-
-那么 IP 变更后，脚本会自动：
-
-- 查找对应 Zone
-- 查找该域名下的 A 记录
-- 更新为新 IP
-- 如果不存在 A 记录则自动创建
 
 ---
 
