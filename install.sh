@@ -33,8 +33,27 @@ detect_os() {
   echo "unknown"
 }
 
+have_required_commands() {
+  local cmd
+  for cmd in git curl bash jq crontab ping node npm
+  do
+    if ! command -v "$cmd" >/dev/null 2>&1
+    then
+      return 1
+    fi
+  done
+  return 0
+}
+
 install_packages() {
   local os_family="$1"
+
+  if have_required_commands
+  then
+    echo "依赖已存在，跳过系统包安装"
+    return
+  fi
+
   case "$os_family" in
     debian)
       $SUDO apt-get update
@@ -72,9 +91,9 @@ enable_cron() {
 
 prepare_repo() {
   if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "检测到已安装目录，正在拉取最新代码..."
+    echo "检测到已安装目录，正在同步最新代码..."
     $SUDO git -C "$INSTALL_DIR" fetch --all --tags
-    $SUDO git -C "$INSTALL_DIR" checkout "$BRANCH"
+    $SUDO git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null 2>&1 || $SUDO git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
     $SUDO git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
     return
   fi
@@ -92,12 +111,28 @@ prepare_repo() {
 }
 
 setup_node() {
+  local hash_source
+  local current_hash
+  local hash_file
+
   cd "$INSTALL_DIR"
+
   if [ -f package-lock.json ]; then
-    $SUDO npm install
+    hash_source="package-lock.json"
   else
-    $SUDO npm install
+    hash_source="package.json"
   fi
+
+  hash_file="$INSTALL_DIR/.npm-deps.hash"
+  current_hash=$(sha256sum "$hash_source" | awk '{print $1}')
+
+  if [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$hash_file" ] && [ "$(cat "$hash_file")" = "$current_hash" ]; then
+    echo "npm 依赖未变化，跳过 npm install"
+    return
+  fi
+
+  $SUDO npm install
+  printf '%s\n' "$current_hash" | $SUDO tee "$hash_file" >/dev/null
 }
 
 prepare_files() {
