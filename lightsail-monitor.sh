@@ -34,12 +34,12 @@ prompt_non_empty() {
 
 select_region() {
   echo "请选择地区：" >&2
-  echo "（1）美国东部（俄亥俄） us-east-2             | （8）亚太地区（东京） ap-northeast-1" >&2
-  echo "（2）美国东部（弗吉尼亚北部） us-east-1       | （9）加拿大（中部） ca-central-1" >&2
-  echo "（3）美国西部（俄勒冈） us-west-2            | （10）欧洲（法兰克福） eu-central-1" >&2
-  echo "（4）亚太地区（孟买） ap-south-1             | （11）欧洲（爱尔兰） eu-west-1" >&2
-  echo "（5）亚太地区（首尔） ap-northeast-2         | （12）欧洲（伦敦） eu-west-2" >&2
-  echo "（6）亚太地区（新加坡） ap-southeast-1       | （13）欧洲（巴黎） eu-west-3" >&2
+  echo "（1）美国东部（俄亥俄） us-east-2           │ （8）亚太地区（东京） ap-northeast-1" >&2
+  echo "（2）美国东部（弗吉尼亚北部） us-east-1     │ （9）加拿大（中部） ca-central-1" >&2
+  echo "（3）美国西部（俄勒冈） us-west-2          │ （10）欧洲（法兰克福） eu-central-1" >&2
+  echo "（4）亚太地区（孟买） ap-south-1           │ （11）欧洲（爱尔兰） eu-west-1" >&2
+  echo "（5）亚太地区（首尔） ap-northeast-2       │ （12）欧洲（伦敦） eu-west-2" >&2
+  echo "（6）亚太地区（新加坡） ap-southeast-1     │ （13）欧洲（巴黎） eu-west-3" >&2
   echo "（7）亚太地区（悉尼） ap-southeast-2" >&2
   while true; do
     read -r -p "输入地区序号: " selected
