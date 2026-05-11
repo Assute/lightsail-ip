@@ -33,45 +33,31 @@ prompt_non_empty() {
 }
 
 select_region() {
-  local lines=()
-  local total
-  local left_count
-  local i
-  local left_line
-  local right_line
-  local left_idx left_label left_code
-  local right_idx right_label right_code
-  mapfile -t lines < <(run_js list-regions)
-  if [ "${#lines[@]}" -eq 0 ]; then
-    echo "没有可选地区" >&2
-    return 1
-  fi
   echo "请选择地区：" >&2
-  total=${#lines[@]}
-  left_count=$(( (total + 1) / 2 ))
-  for (( i=0; i<left_count; i++ )); do
-    left_line="${lines[$i]}"
-    IFS='|' read -r left_idx left_label left_code <<< "$left_line"
-
-    if (( i + left_count < total )); then
-      right_line="${lines[$((i + left_count))]}"
-      IFS='|' read -r right_idx right_label right_code <<< "$right_line"
-      printf '%-44s | %s\n' \
-        "（${left_idx}）${left_label} ${left_code}" \
-        "（${right_idx}）${right_label} ${right_code}" >&2
-    else
-      printf '%s\n' "（${left_idx}）${left_label} ${left_code}" >&2
-    fi
-  done
+  echo "（1）美国东部（俄亥俄） us-east-2             | （8）亚太地区（东京） ap-northeast-1" >&2
+  echo "（2）美国东部（弗吉尼亚北部） us-east-1       | （9）加拿大（中部） ca-central-1" >&2
+  echo "（3）美国西部（俄勒冈） us-west-2            | （10）欧洲（法兰克福） eu-central-1" >&2
+  echo "（4）亚太地区（孟买） ap-south-1             | （11）欧洲（爱尔兰） eu-west-1" >&2
+  echo "（5）亚太地区（首尔） ap-northeast-2         | （12）欧洲（伦敦） eu-west-2" >&2
+  echo "（6）亚太地区（新加坡） ap-southeast-1       | （13）欧洲（巴黎） eu-west-3" >&2
+  echo "（7）亚太地区（悉尼） ap-southeast-2" >&2
   while true; do
     read -r -p "输入地区序号: " selected
-    for line in "${lines[@]}"; do
-      IFS='|' read -r idx label code <<< "$line"
-      if [ "$selected" = "$idx" ]; then
-        printf '%s\n' "$code"
-        return 0
-      fi
-    done
+    case "$selected" in
+      1) printf '%s\n' "us-east-2"; return 0 ;;
+      2) printf '%s\n' "us-east-1"; return 0 ;;
+      3) printf '%s\n' "us-west-2"; return 0 ;;
+      4) printf '%s\n' "ap-south-1"; return 0 ;;
+      5) printf '%s\n' "ap-northeast-2"; return 0 ;;
+      6) printf '%s\n' "ap-southeast-1"; return 0 ;;
+      7) printf '%s\n' "ap-southeast-2"; return 0 ;;
+      8) printf '%s\n' "ap-northeast-1"; return 0 ;;
+      9) printf '%s\n' "ca-central-1"; return 0 ;;
+      10) printf '%s\n' "eu-central-1"; return 0 ;;
+      11) printf '%s\n' "eu-west-1"; return 0 ;;
+      12) printf '%s\n' "eu-west-2"; return 0 ;;
+      13) printf '%s\n' "eu-west-3"; return 0 ;;
+    esac
     echo "序号无效，请重新输入" >&2
   done
 }
