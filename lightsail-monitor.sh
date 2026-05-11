@@ -56,11 +56,11 @@ select_region() {
     if (( i + left_count < total )); then
       right_line="${lines[$((i + left_count))]}"
       IFS='|' read -r right_idx right_label right_code <<< "$right_line"
-      printf '%-32s %s\n' \
-        "${left_idx}) ${left_label} ${left_code}" \
-        "${right_idx}) ${right_label} ${right_code}" >&2
+      printf '%-44s | %s\n' \
+        "（${left_idx}）${left_label} ${left_code}" \
+        "（${right_idx}）${right_label} ${right_code}" >&2
     else
-      printf '%s\n' "${left_idx}) ${left_label} ${left_code}" >&2
+      printf '%s\n' "（${left_idx}）${left_label} ${left_code}" >&2
     fi
   done
   while true; do
