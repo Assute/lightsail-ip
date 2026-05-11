@@ -75,7 +75,7 @@ prepare_repo() {
     echo "检测到已安装目录，正在拉取最新代码..."
     $SUDO git -C "$INSTALL_DIR" fetch --all --tags
     $SUDO git -C "$INSTALL_DIR" checkout "$BRANCH"
-    $SUDO git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+    $SUDO git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
     return
   fi
 
