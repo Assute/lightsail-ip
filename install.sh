@@ -152,12 +152,6 @@ main() {
   prepare_files
   enable_cron
 
-  echo
-  echo "安装完成：$INSTALL_DIR"
-  echo "交互入口：lightsail-monitor"
-  echo "或执行：bash $INSTALL_DIR/lightsail-monitor.sh"
-  echo
-
   exec bash "$INSTALL_DIR/lightsail-monitor.sh"
 }
 
