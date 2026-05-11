@@ -34,15 +34,34 @@ prompt_non_empty() {
 
 select_region() {
   local lines=()
+  local total
+  local left_count
+  local i
+  local left_line
+  local right_line
+  local left_idx left_label left_code
+  local right_idx right_label right_code
   mapfile -t lines < <(run_js list-regions)
   if [ "${#lines[@]}" -eq 0 ]; then
-    echo "没有可选地区"
+    echo "没有可选地区" >&2
     return 1
   fi
-  echo "请选择地区："
-  for line in "${lines[@]}"; do
-    IFS='|' read -r idx label code <<< "$line"
-    printf '%s) %s  %s\n' "$idx" "$label" "$code"
+  echo "请选择地区：" >&2
+  total=${#lines[@]}
+  left_count=$(( (total + 1) / 2 ))
+  for (( i=0; i<left_count; i++ )); do
+    left_line="${lines[$i]}"
+    IFS='|' read -r left_idx left_label left_code <<< "$left_line"
+
+    if (( i + left_count < total )); then
+      right_line="${lines[$((i + left_count))]}"
+      IFS='|' read -r right_idx right_label right_code <<< "$right_line"
+      printf '%-32s %s\n' \
+        "${left_idx}) ${left_label} ${left_code}" \
+        "${right_idx}) ${right_label} ${right_code}" >&2
+    else
+      printf '%s\n' "${left_idx}) ${left_label} ${left_code}" >&2
+    fi
   done
   while true; do
     read -r -p "输入地区序号: " selected
@@ -53,7 +72,7 @@ select_region() {
         return 0
       fi
     done
-    echo "序号无效，请重新输入"
+    echo "序号无效，请重新输入" >&2
   done
 }
 
@@ -67,15 +86,15 @@ select_server() {
   fi
 
   if [ "${#lines[@]}" -eq 0 ]; then
-    echo "暂无可选服务器"
+    echo "暂无可选服务器" >&2
     return 1
   fi
 
-  echo "请选择 Lightsail 服务器："
+  echo "请选择 Lightsail 服务器：" >&2
   for line in "${lines[@]}"; do
     IFS='|' read -r idx id remark region current_ip proxy_set rotation_on traffic_limit <<< "$line"
     printf '%s) %s [%s] IP=%s 代理=%s 自动切换=%s 流量限制=%sGB\n' \
-      "$idx" "$remark" "$region" "${current_ip:--}" "$proxy_set" "$rotation_on" "$traffic_limit"
+      "$idx" "$remark" "$region" "${current_ip:--}" "$proxy_set" "$rotation_on" "$traffic_limit" >&2
   done
 
   while true; do
@@ -87,7 +106,7 @@ select_server() {
         return 0
       fi
     done
-    echo "序号无效，请重新输入"
+    echo "序号无效，请重新输入" >&2
   done
 }
 
@@ -95,13 +114,13 @@ select_domain() {
   local lines=()
   mapfile -t lines < <(run_js list-domains)
   if [ "${#lines[@]}" -eq 0 ]; then
-    echo "暂无可选根域名"
+    echo "暂无可选根域名" >&2
     return 1
   fi
-  echo "请选择根域名："
+  echo "请选择根域名：" >&2
   for line in "${lines[@]}"; do
     IFS='|' read -r idx id root_domain <<< "$line"
-    printf '%s) %s\n' "$idx" "$root_domain"
+    printf '%s) %s\n' "$idx" "$root_domain" >&2
   done
   while true; do
     read -r -p "输入根域名序号: " selected
@@ -112,7 +131,7 @@ select_domain() {
         return 0
       fi
     done
-    echo "序号无效，请重新输入"
+    echo "序号无效，请重新输入" >&2
   done
 }
 
@@ -132,10 +151,10 @@ select_aws_instance() {
     return 1
   fi
 
-  echo "请选择该地区下的 Lightsail 实例："
+  echo "请选择该地区下的 Lightsail 实例：" >&2
   for line in "${lines[@]}"; do
     IFS='|' read -r idx instance_name ip <<< "$line"
-    printf '%s) %s IP=%s\n' "$idx" "$instance_name" "${ip:--}"
+    printf '%s) %s IP=%s\n' "$idx" "$instance_name" "${ip:--}" >&2
   done
 
   while true; do
@@ -150,7 +169,7 @@ select_aws_instance() {
         return 0
       fi
     done
-    echo "序号无效，请重新输入"
+    echo "序号无效，请重新输入" >&2
   done
 }
 
