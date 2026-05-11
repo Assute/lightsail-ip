@@ -50,7 +50,6 @@ install_packages() {
 
   if have_required_commands
   then
-    echo "依赖已存在，跳过系统包安装"
     return
   fi
 
@@ -91,23 +90,20 @@ enable_cron() {
 
 prepare_repo() {
   if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "检测到已安装目录，正在同步最新代码..."
-    $SUDO git -C "$INSTALL_DIR" fetch --all --tags
+    $SUDO git -C "$INSTALL_DIR" fetch --all --tags >/dev/null 2>&1
     $SUDO git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null 2>&1 || $SUDO git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
-    $SUDO git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+    $SUDO git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" >/dev/null 2>&1
     return
   fi
 
   if [ -f "$PWD/lightsail_monitor.js" ] && [ -f "$PWD/lightsail-monitor.sh" ]; then
-    echo "从当前目录复制文件到 $INSTALL_DIR"
     $SUDO mkdir -p "$INSTALL_DIR"
     $SUDO cp -a "$PWD/." "$INSTALL_DIR/"
     return
   fi
 
-  echo "正在从 GitHub 拉取仓库..."
   $SUDO rm -rf "$INSTALL_DIR"
-  $SUDO git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+  $SUDO git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR" >/dev/null 2>&1
 }
 
 setup_node() {
@@ -127,11 +123,10 @@ setup_node() {
   current_hash=$(sha256sum "$hash_source" | awk '{print $1}')
 
   if [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$hash_file" ] && [ "$(cat "$hash_file")" = "$current_hash" ]; then
-    echo "npm 依赖未变化，跳过 npm install"
     return
   fi
 
-  $SUDO npm install
+  $SUDO npm install --silent
   printf '%s\n' "$current_hash" | $SUDO tee "$hash_file" >/dev/null
 }
 
