@@ -722,6 +722,23 @@ function printDomains(config) {
   }
 }
 
+function printDnsTasks(config) {
+  let index = 0;
+  for (const task of config.dns_tasks) {
+    if (task.enabled === false) continue;
+    const server = findServer(config, task.server_id);
+    const domain = findDomain(config, task.domain_id);
+    index += 1;
+    console.log([
+      index,
+      task.id,
+      server ? server.remark : task.server_id,
+      domain ? domain.root_domain : task.domain_id,
+      (task.subdomains || []).join(","),
+    ].join("|"));
+  }
+}
+
 function printSummary(config) {
   console.log("=== Lightsail 服务器 ===");
   if (!config.lightsail_servers.length) console.log("暂无服务器");
@@ -925,6 +942,19 @@ function commandAddServer(store, args) {
   return 0;
 }
 
+function commandDeleteServer(store, args) {
+  const config = store.load();
+  const server = findServer(config, requireValue("鏈嶅姟鍣?", args.server));
+  if (!server) throw new Error(`鎵句笉鍒版湇鍔″櫒: ${args.server}`);
+  config.lightsail_servers = config.lightsail_servers.filter((item) => item.id !== server.id);
+  config.rotation_tasks = config.rotation_tasks.filter((item) => item.server_id !== server.id);
+  config.dns_tasks = config.dns_tasks.filter((item) => item.server_id !== server.id);
+  config.traffic_tasks = config.traffic_tasks.filter((item) => item.server_id !== server.id);
+  store.save();
+  console.log(`宸插垹闄?Lightsail 鏈嶅姟鍣? ${server.remark}`);
+  return 0;
+}
+
 async function commandListAwsInstances(args) {
   const tempServer = {
     region: requireRegion(args.region),
@@ -955,6 +985,17 @@ function commandAddDomain(store, args) {
   return 0;
 }
 
+function commandDeleteDomain(store, args) {
+  const config = store.load();
+  const domain = findDomain(config, requireValue("鏍瑰煙鍚?", args.domain));
+  if (!domain) throw new Error(`鎵句笉鍒版牴鍩熷悕: ${args.domain}`);
+  config.domains = config.domains.filter((item) => item.id !== domain.id);
+  config.dns_tasks = config.dns_tasks.filter((item) => item.domain_id !== domain.id);
+  store.save();
+  console.log(`宸插垹闄ゆ牴鍩熷悕: ${domain.root_domain}`);
+  return 0;
+}
+
 function commandAddRotation(store, args) {
   const config = store.load();
   const server = findServer(config, requireValue("服务器", args.server));
@@ -966,6 +1007,16 @@ function commandAddRotation(store, args) {
   config.rotation_tasks.push({ id: newId("rot"), server_id: server.id, enabled: true });
   store.save();
   console.log(`已启用自动切换 IP: ${server.remark}`);
+  return 0;
+}
+
+function commandDeleteRotation(store, args) {
+  const config = store.load();
+  const server = findServer(config, requireValue("鏈嶅姟鍣?", args.server));
+  if (!server) throw new Error(`鎵句笉鍒版湇鍔″櫒: ${args.server}`);
+  config.rotation_tasks = config.rotation_tasks.filter((item) => item.server_id !== server.id);
+  store.save();
+  console.log(`宸插垹闄よ嚜鍔ㄥ垏鎹?IP 浠诲姟: ${server.remark}`);
   return 0;
 }
 
@@ -1000,6 +1051,17 @@ function commandAddDns(store, args) {
   return 0;
 }
 
+function commandDeleteDns(store, args) {
+  const config = store.load();
+  const taskId = requireValue("DNS 浠诲姟", args.task);
+  const task = config.dns_tasks.find((item) => item.id === taskId);
+  if (!task) throw new Error(`鎵句笉鍒?DNS 浠诲姟: ${taskId}`);
+  config.dns_tasks = config.dns_tasks.filter((item) => item.id !== taskId);
+  store.save();
+  console.log(`宸插垹闄?DNS 浠诲姟: ${taskId}`);
+  return 0;
+}
+
 function commandAddTraffic(store, args) {
   const config = store.load();
   const server = findServer(config, requireValue("服务器", args.server));
@@ -1015,6 +1077,16 @@ function commandAddTraffic(store, args) {
   }
   store.save();
   console.log(`已设置流量限制: ${server.remark} >= ${limitGb.toFixed(2)} GB 自动关机`);
+  return 0;
+}
+
+function commandDeleteTraffic(store, args) {
+  const config = store.load();
+  const server = findServer(config, requireValue("鏈嶅姟鍣?", args.server));
+  if (!server) throw new Error(`鎵句笉鍒版湇鍔″櫒: ${args.server}`);
+  config.traffic_tasks = config.traffic_tasks.filter((item) => item.server_id !== server.id);
+  store.save();
+  console.log(`宸插垹闄ゆ祦閲忛檺鍒朵换鍔? ${server.remark}`);
   return 0;
 }
 
@@ -1041,13 +1113,19 @@ function printUsage(scriptName) {
   node ${scriptName} [--config path] list-servers
   node ${scriptName} [--config path] list-rotation-servers
   node ${scriptName} [--config path] list-domains
+  node ${scriptName} [--config path] list-dns-tasks
   node ${scriptName} list-aws-instances --region ap-southeast-1 --aws-access-key-id KEY --aws-secret-access-key SECRET [--proxy-url URL]
   node ${scriptName} [--config path] summary
+  node ${scriptName} [--config path] delete-server --server lightsail-sg
   node ${scriptName} [--config path] add-server --remark 名称 --region ap-southeast-1 --aws-access-key-id KEY --aws-secret-access-key SECRET [--proxy-url URL] [--instance-name NAME]
   node ${scriptName} [--config path] add-domain --root-domain example.com --token CF_TOKEN
+  node ${scriptName} [--config path] delete-domain --domain example.com
   node ${scriptName} [--config path] add-rotation --server lightsail-sg
+  node ${scriptName} [--config path] delete-rotation --server lightsail-sg
   node ${scriptName} [--config path] add-dns --server lightsail-sg --domain example.com --subdomains sg,www,@
+  node ${scriptName} [--config path] delete-dns --task dns-xxxxxx
   node ${scriptName} [--config path] add-traffic --server lightsail-sg --limit-gb 850
+  node ${scriptName} [--config path] delete-traffic --server lightsail-sg
   node ${scriptName} [--config path] set-telegram --bot-token TOKEN --chat-id CHAT_ID
   node ${scriptName} [--config path] run [--server lightsail-sg]
   node ${scriptName} [--config path] install-cron [--schedule "*/5 * * * *"] [--server lightsail-sg]
@@ -1071,13 +1149,19 @@ async function main() {
     if (command === "list-servers") return printServers(store.load(), false), 0;
     if (command === "list-rotation-servers") return printServers(store.load(), true), 0;
     if (command === "list-domains") return printDomains(store.load()), 0;
+    if (command === "list-dns-tasks") return printDnsTasks(store.load()), 0;
     if (command === "summary") return printSummary(store.load()), 0;
     if (command === "list-aws-instances") return commandListAwsInstances(args);
     if (command === "add-server") return commandAddServer(store, args);
+    if (command === "delete-server") return commandDeleteServer(store, args);
     if (command === "add-domain") return commandAddDomain(store, args);
+    if (command === "delete-domain") return commandDeleteDomain(store, args);
     if (command === "add-rotation") return commandAddRotation(store, args);
+    if (command === "delete-rotation") return commandDeleteRotation(store, args);
     if (command === "add-dns") return commandAddDns(store, args);
+    if (command === "delete-dns") return commandDeleteDns(store, args);
     if (command === "add-traffic") return commandAddTraffic(store, args);
+    if (command === "delete-traffic") return commandDeleteTraffic(store, args);
     if (command === "set-telegram") return commandSetTelegram(store, args);
     if (command === "run") return commandRun(store, args);
     if (command === "install-cron") {

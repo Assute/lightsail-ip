@@ -121,6 +121,31 @@ select_domain() {
   done
 }
 
+select_dns_task() {
+  local lines=()
+  mapfile -t lines < <(run_js list-dns-tasks)
+  if [ "${#lines[@]}" -eq 0 ]; then
+    echo "暂无可选 DNS 任务" >&2
+    return 1
+  fi
+  echo "请选择自动解析任务：" >&2
+  for line in "${lines[@]}"; do
+    IFS='|' read -r idx id server_name root_domain subdomains <<< "$line"
+    printf '%s) %s -> %s [%s]\n' "$idx" "$server_name" "$root_domain" "$subdomains" >&2
+  done
+  while true; do
+    read -r -p "输入 DNS 任务序号: " selected
+    for line in "${lines[@]}"; do
+      IFS='|' read -r idx id server_name root_domain subdomains <<< "$line"
+      if [ "$selected" = "$idx" ]; then
+        printf '%s\n' "$id"
+        return 0
+      fi
+    done
+    echo "序号无效，请重新输入" >&2
+  done
+}
+
 select_aws_instance() {
   local region="$1"
   local access_key="$2"
@@ -188,10 +213,28 @@ menu_add_domain() {
   run_js add-domain --root-domain "$root_domain" --token "$token"
 }
 
+menu_delete_server() {
+  local server_id
+  server_id=$(select_server all) || return 1
+  run_js delete-server --server "$server_id"
+}
+
+menu_delete_domain() {
+  local domain_id
+  domain_id=$(select_domain) || return 1
+  run_js delete-domain --domain "$domain_id"
+}
+
 menu_add_rotation() {
   local server_id
   server_id=$(select_server all) || return 1
   run_js add-rotation --server "$server_id"
+}
+
+menu_delete_rotation() {
+  local server_id
+  server_id=$(select_server rotation) || return 1
+  run_js delete-rotation --server "$server_id"
 }
 
 menu_add_dns() {
@@ -202,11 +245,23 @@ menu_add_dns() {
   run_js add-dns --server "$server_id" --domain "$domain_id" --subdomains "$subdomains"
 }
 
+menu_delete_dns() {
+  local task_id
+  task_id=$(select_dns_task) || return 1
+  run_js delete-dns --task "$task_id"
+}
+
 menu_add_traffic() {
   local server_id limit_gb
   server_id=$(select_server all) || return 1
   limit_gb=$(prompt_non_empty "填写流量限制 GB，等于或大于时关机: ")
   run_js add-traffic --server "$server_id" --limit-gb "$limit_gb"
+}
+
+menu_delete_traffic() {
+  local server_id
+  server_id=$(select_server all) || return 1
+  run_js delete-traffic --server "$server_id"
 }
 
 menu_set_telegram() {
@@ -245,15 +300,20 @@ show_menu() {
 
 ================ Lightsail Monitor ================
 1) 添加 Lightsail 服务器
-2) 添加根域名 / Cloudflare Token
-3) 添加自动切换 IP 任务
-4) 添加自动解析域名任务
-5) 添加流量限制任务
-6) 设置 Telegram 通知
-7) 查看配置摘要
-8) 立即执行检测
-9) 安装 / 更新 Cron 定时任务
-10) 删除 Cron 定时任务
+2) 删除 Lightsail 服务器
+3) 添加根域名 / Cloudflare Token
+4) 删除根域名
+5) 添加自动切换 IP 任务
+6) 删除自动切换 IP 任务
+7) 添加自动解析域名任务
+8) 删除自动解析域名任务
+9) 添加流量限制任务
+10) 删除流量限制任务
+11) 设置 Telegram 通知
+12) 查看配置摘要
+13) 立即执行检测
+14) 安装 / 更新 Cron 定时任务
+15) 删除 Cron 定时任务
 0) 退出
 ===================================================
 EOF
@@ -264,15 +324,20 @@ while true; do
   read -r -p "请输入序号: " choice
   case "$choice" in
     1) menu_add_server; pause ;;
-    2) menu_add_domain; pause ;;
-    3) menu_add_rotation; pause ;;
-    4) menu_add_dns; pause ;;
-    5) menu_add_traffic; pause ;;
-    6) menu_set_telegram; pause ;;
-    7) run_js summary; pause ;;
-    8) menu_run_now; pause ;;
-    9) menu_install_cron; pause ;;
-    10) run_js remove-cron; pause ;;
+    2) menu_delete_server; pause ;;
+    3) menu_add_domain; pause ;;
+    4) menu_delete_domain; pause ;;
+    5) menu_add_rotation; pause ;;
+    6) menu_delete_rotation; pause ;;
+    7) menu_add_dns; pause ;;
+    8) menu_delete_dns; pause ;;
+    9) menu_add_traffic; pause ;;
+    10) menu_delete_traffic; pause ;;
+    11) menu_set_telegram; pause ;;
+    12) run_js summary; pause ;;
+    13) menu_run_now; pause ;;
+    14) menu_install_cron; pause ;;
+    15) run_js remove-cron; pause ;;
     0) exit 0 ;;
     *) echo "无效序号"; pause ;;
   esac
