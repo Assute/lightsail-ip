@@ -1,0 +1,16 @@
+{
+  "name": "lightsail-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS Lightsail IP rotate / traffic monitor / Cloudflare DNS / Telegram notifier",
+  "main": "lightsail_monitor.js",
+  "scripts": {
+    "start": "node lightsail_monitor.js summary"
+  },
+  "dependencies": {
+    "@aws-sdk/client-lightsail": "^3.821.0",
+    "@smithy/node-http-handler": "^4.1.0",
+    "axios": "^1.9.0",
+    "proxy-agent": "^6.5.0"
+  }
+}

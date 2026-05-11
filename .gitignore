@@ -1,0 +1,8 @@
+config.json
+lightsail-ip.log
+node_modules/
+config.test.json
+*.bak
+*.bak-*
+*.tmp
+.DS_Store

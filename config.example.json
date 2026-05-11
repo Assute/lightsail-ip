@@ -1,0 +1,62 @@
+{
+  "version": 2,
+  "defaults": {
+    "ping_times": 30,
+    "cron_schedule": "*/5 * * * *"
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  },
+  "domains": [
+    {
+      "id": "dom-example-com",
+      "root_domain": "example.com",
+      "token": "YOUR_CLOUDFLARE_TOKEN_EXAMPLE_COM",
+      "enabled": true
+    }
+  ],
+  "lightsail_servers": [
+    {
+      "id": "srv-example-sg",
+      "remark": "lightsail-sg",
+      "enabled": true,
+      "region": "ap-southeast-1",
+      "aws_access_key_id": "YOUR_AWS_ACCESS_KEY_ID",
+      "aws_secret_access_key": "YOUR_AWS_SECRET_ACCESS_KEY",
+      "proxy_url": "http://user:pass@host:port",
+      "current_ip": "",
+      "instance_name": "lightsail-sg-01",
+      "notification_enabled": true
+    }
+  ],
+  "rotation_tasks": [
+    {
+      "id": "rot-example-sg",
+      "server_id": "srv-example-sg",
+      "enabled": true
+    }
+  ],
+  "dns_tasks": [
+    {
+      "id": "dns-example-sg",
+      "server_id": "srv-example-sg",
+      "domain_id": "dom-example-com",
+      "subdomains": [
+        "sg",
+        "www"
+      ],
+      "proxied": false,
+      "enabled": true
+    }
+  ],
+  "traffic_tasks": [
+    {
+      "id": "traf-example-sg",
+      "server_id": "srv-example-sg",
+      "limit_gb": 850,
+      "enabled": true
+    }
+  ]
+}

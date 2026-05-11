@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_URL="${REPO_URL:-https://github.com/Assute/lightsail-monitor.git}"
+BRANCH="${BRANCH:-main}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/lightsail-monitor}"
+
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    echo "请使用 root 执行，或先安装 sudo"
+    exit 1
+  fi
+else
+  SUDO=""
+fi
+
+detect_os() {
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "${ID:-}" in
+      ubuntu|debian) echo "debian"; return ;;
+      alpine) echo "alpine"; return ;;
+      centos|rhel|rocky|almalinux|ol|fedora) echo "rhel"; return ;;
+    esac
+    case "${ID_LIKE:-}" in
+      *debian*) echo "debian"; return ;;
+      *rhel*|*fedora*) echo "rhel"; return ;;
+      *alpine*) echo "alpine"; return ;;
+    esac
+  fi
+  echo "unknown"
+}
+
+install_packages() {
+  local os_family="$1"
+  case "$os_family" in
+    debian)
+      $SUDO apt-get update
+      $SUDO apt-get install -y git curl bash jq cron iputils-ping nodejs npm ca-certificates
+      ;;
+    alpine)
+      $SUDO apk add --no-cache git curl bash jq dcron iputils nodejs npm ca-certificates
+      ;;
+    rhel)
+      $SUDO yum install -y git curl bash jq cronie iputils nodejs npm ca-certificates
+      ;;
+    *)
+      echo "暂不支持当前系统自动安装依赖，请手动安装：git curl bash jq cron ping nodejs npm"
+      exit 1
+      ;;
+  esac
+}
+
+enable_cron() {
+  if command -v systemctl >/dev/null 2>&1; then
+    $SUDO systemctl enable --now cron >/dev/null 2>&1 || true
+    $SUDO systemctl enable --now crond >/dev/null 2>&1 || true
+  fi
+  if command -v service >/dev/null 2>&1; then
+    $SUDO service cron start >/dev/null 2>&1 || true
+    $SUDO service crond start >/dev/null 2>&1 || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    $SUDO rc-service crond start >/dev/null 2>&1 || true
+  fi
+  if command -v rc-update >/dev/null 2>&1; then
+    $SUDO rc-update add crond default >/dev/null 2>&1 || true
+  fi
+}
+
+prepare_repo() {
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    echo "检测到已安装目录，正在拉取最新代码..."
+    $SUDO git -C "$INSTALL_DIR" fetch --all --tags
+    $SUDO git -C "$INSTALL_DIR" checkout "$BRANCH"
+    $SUDO git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+    return
+  fi
+
+  if [ -f "$PWD/lightsail_monitor.js" ] && [ -f "$PWD/lightsail-monitor.sh" ]; then
+    echo "从当前目录复制文件到 $INSTALL_DIR"
+    $SUDO mkdir -p "$INSTALL_DIR"
+    $SUDO cp -a "$PWD/." "$INSTALL_DIR/"
+    return
+  fi
+
+  echo "正在从 GitHub 拉取仓库..."
+  $SUDO rm -rf "$INSTALL_DIR"
+  $SUDO git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+}
+
+setup_node() {
+  cd "$INSTALL_DIR"
+  if [ -f package-lock.json ]; then
+    $SUDO npm install
+  else
+    $SUDO npm install
+  fi
+}
+
+prepare_files() {
+  if [ ! -f "$INSTALL_DIR/config.json" ] && [ -f "$INSTALL_DIR/config.example.json" ]; then
+    $SUDO cp "$INSTALL_DIR/config.example.json" "$INSTALL_DIR/config.json"
+  fi
+  $SUDO chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/lightsail-monitor.sh" "$INSTALL_DIR/lightsail-ip.sh"
+  $SUDO ln -sf "$INSTALL_DIR/lightsail-monitor.sh" /usr/local/bin/lightsail-monitor
+}
+
+main() {
+  local os_family
+  os_family=$(detect_os)
+  install_packages "$os_family"
+  prepare_repo
+  setup_node
+  prepare_files
+  enable_cron
+
+  echo
+  echo "安装完成：$INSTALL_DIR"
+  echo "交互入口：lightsail-monitor"
+  echo "或执行：bash $INSTALL_DIR/lightsail-monitor.sh"
+  echo
+
+  exec bash "$INSTALL_DIR/lightsail-monitor.sh"
+}
+
+main "$@"
